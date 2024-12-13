@@ -1,0 +1,435 @@
+---
+title: "chs_v9_share_compiled"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Code for analysis performed to match CHS microbiome transplant paper, "GxGxE interactions and adaptive potential of the microbiome in Drosophila melanogaster". 
+
+
+```{r}
+rm(list=ls())
+
+#libraries (download all even though not totally sure what's used)
+#microbiome/visualization packages
+require(ggplot2)
+require(phyloseq)
+require(vegan)
+require(tidyverse)
+require(scales)
+require(grid)
+require(reshape2)
+require(ggthemes)
+require(car)
+require(RColorBrewer)
+require(ggpubr)
+
+#mixed model packages
+require(DHARMa)
+require(glmmTMB)
+require(lme4)
+require(emmeans)
+require(performance)
+
+#need to customize the dodge so you can see the difference
+pd<- position_dodge(0.1)
+pd3<- position_dodge(0.3)
+
+#setwd don't forget
+
+
+```
+
+
+Figure 1 is methods diagram. 
+
+Figure 2: Differentially abundant bacteria between C and HS flies. Data in figure 2 is from QIIME2 processing of 16S v1-v2 microbiome profiling. 
+```{r}
+#figure 2a
+#plot for relative abundance
+chs_nowolb <- readRDS("datashare/chs_nowolb_donors_obj_sp_SHARE.rds")
+
+#remove thouse with fewer than 500 reads/fly
+chs_red<- prune_samples(sample_sums(chs_nowolb)>=500, chs_nowolb)
+
+#calculate relative abundance for visualization
+chsred_donor<- chs_red%>%
+    tax_glom(taxrank="Species") %>%
+    transform_sample_counts(function(x) {x/sum(x)}) %>%
+    psmelt() %>%
+    #filters based on abundance at individual level
+    filter(Abundance > 0.1) %>%
+    arrange(Species)
+
+#look at abundances 
+chsred_donor %>%
+  select(generation, Abundance, Species) %>%
+  group_by(generation, Species) %>%
+  filter(generation == "C donor fly") %>%
+  summarise(avg=mean(Abundance)) %>%
+  arrange(Species)
+
+chsred_donor %>%
+  select(generation, Sample, Abundance, Species) %>%
+  filter(generation == "C donor fly" & Species == "Acetobacter persici") %>%
+  summarise(n=n(), avg=mean(Abundance))
+
+#create palette to highlight the differences between C Aceto and HS Aceto
+donorpal<- c("#fb8072", "#80b1d3", "#8dd3c7", "#ffffb3", "#bebada", "#fdb462", "#b3de69", "#fccde5", "#d9d9d9","#bc80bd", "#ccebc5")
+
+
+#individuals 
+#plot.donors.relabund.ind<- 
+chsred_donor %>%
+  #arbirtary order for visualization 
+  mutate(artorder = case_when(generation == "C donor fly" ~ 1, 
+                              generation == "HS donor fly" ~ 2)) %>%
+  ggplot(., aes(x=fct_reorder(Sample, artorder), y=Abundance, fill=Species)) +
+    geom_bar(stat="identity", position = "fill", width = 1,color="black", size=0.05) + 
+    xlab("") + 
+    ylab("Relative abundance") + 
+    scale_fill_manual(values = donorpal) +
+    #scale_fill_brewer(palette = "Set3") +
+    scale_x_discrete(labels = c("C fly", "HS fly")) + 
+    theme_classic() + 
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank()) + 
+    theme(panel.border = element_blank(), axis.line = element_line()) +
+    #theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+    theme(legend.position = "none") +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.line.x = element_blank())
+
+#ggsave(plot.donors.relabund.ind, file="v9_plots/supp_donors_ind.pdf", height=6, width=7)
+
+#calculate relative abundance by groups. save as df to speed up 
+chsred_donor_rel<- chs_red %>%
+    tax_glom(taxrank="Species") %>%
+    transform_sample_counts(function(x) {x/sum(x)}) %>%
+    psmelt()
+
+#printing mean rel. abundance
+chsred_donor_rel %>%
+  group_by(generation, Species) %>%
+  summarise(mean=mean(Abundance), ssd = sd(Abundance), se = sd(Abundance)/sqrt(n()), nsam =n()) %>%
+  #arrange for high rel abund 
+  arrange(desc(mean))
+
+#figure 2b
+#look at differences in ancom 
+ancom.d.geno<- read.table("datashare/ancom_donor_flygeno.csv", sep=",", header=TRUE)
+
+#plot.ancom.d.geno<-
+ggplot(ancom.d.geno, aes(x=clr, y=W)) + 
+  geom_point(aes(fill=sig), shape=21, alpha=0.8, size=3) +
+  scale_fill_manual(values = c("#99000d","#91bfdb","#737373"), 
+                     labels = c("C fly", "HS fly", "Neutral")) + 
+  theme_classic() +
+  xlab("Mean centered log ratio") + 
+  ylab("ANCOM W statistic") + 
+  theme(legend.position="none") + 
+  labs(fill="Significance")
+
+#supplemented dots of uric acid to see how acetobacters can break down
+dots<- read.table("datashare/acetos_uricacid_210713b.csv", sep=",", header=TRUE)
+
+#order microbe treatment
+dots$microbe_f<- factor(dots$microbe, levels=c("No UA", "Sterile + UA", "C Aceto", "HS Aceto"))
+
+#first just look at the addition between no ua and sterile to just show the increase worked
+#plot.dots.comparesterile<-
+dots %>%
+  filter(microbe_f == "No UA" | microbe_f == "Sterile + UA") %>%
+  ggplot(., aes(x=diet, y=um.ua, color=microbe_f)) +
+  geom_boxplot(aes(color=microbe_f), outlier.shape = NA) +
+  geom_point(aes(color=microbe_f), position=position_jitterdodge(jitter.width = 0)) +
+  scale_color_manual(values=c("#bdbdbd", "#fee090")) +
+  theme_classic() + 
+  xlab("") + 
+  ylab("Uric acid (umol)") +
+  theme(legend.position = "right") + 
+  theme(panel.grid = element_blank()) + 
+  scale_x_discrete(labels = c("C diet", "HS diet")) + 
+  theme(legend.title = element_blank())
+
+
+#t test to compare either control or hs diet 
+dots %>%
+  filter(microbe_f == "No UA" | microbe_f == "Sterile + UA") %>%
+  filter(diet == "high sugar") %>%
+  t.test(data=., um.ua~microbe_f)
+  
+#paired plots
+#plot.dots.ua <-
+dots %>%
+  filter(microbe_f != "No UA") %>%
+  ggplot(., aes(x=microbe_f, y=um.ua, color=diet)) + 
+  geom_boxplot(aes(color=diet), outlier.shape = NA) +
+  geom_point(aes(fill = diet, color=microbe_f), position=position_jitterdodge(jitter.width = 0)) +
+  #facet_wrap(~diet) + 
+  scale_color_manual(values=c("#fee090","#99000d", "#91bfdb", "#99000d", "#91bfdb")) +
+  theme_classic() + 
+  xlab("") + 
+  ylab("Uric acid (umol)") +
+  #theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  theme(legend.position = "bottom") + 
+  theme(panel.grid = element_blank()) +
+  scale_x_discrete(labels = c("Sterile + UA", "C Aceto + UA", "HS Aceto + UA"))
+
+
+#only No UA only has 4, the rest have 5 observations each 
+dots %>%
+  group_by(diet, microbe_f) %>%
+  summarise(n=n())
+
+#calculating average to find percent decrease on hs diet 
+dots %>%
+  filter(diet == "high sugar" & microbe_f != "No UA" & microbe_f!="Sterile + UA") %>%
+  group_by(microbe_f) %>%
+  summarise(avg=mean(um.ua)) 
+
+#c aceto is 64.7 and hs aceto is 30.3
+(64.7-30.3)/64.7*100
+
+#remove the no ua treatment from stats because more a technical artefect
+dots.allua<- filter(dots, microbe != "No UA")
+
+dots.m1<- lm(data=dots.allua, um.ua~microbe_f*diet)
+car::Anova(dots.m1, type="III")
+
+#check assumptions
+#residuals normally distributed w=0.977, p=0.7694
+hist(resid(dots.m1))
+shapiro.test(resid(dots.m1))
+
+#check qqplot. resids look good 
+ggpubr::ggqqplot(dots.m1$residuals)
+#check fitted vs residuals. 3 outliers, but not super weird
+plot(dots.m1, 1)
+#homogeneity of variance is OK 
+car::leveneTest(data=dots.allua, um.ua~microbe_f*diet)
+
+#post hoc comparing means by diet between two microbes
+#bonferroni correction for three tests = 0.05/3 --> sig cutoff = 0.01667
+
+#confirming data is normally distributed for t test
+#yes w =0.93, p=0.06
+shapiro.test(dots.allua$um.ua)
+
+
+#not significant for sterile p=0.73
+dots.allua %>%
+  filter(microbe == "Sterile + UA") %>%
+  t.test(data=., um.ua~diet)
+
+#not significant for c aceto p=0.12
+dots.allua %>%
+  filter(microbe == "C Aceto") %>%
+  t.test(data=., um.ua~diet)
+
+#yes significnat for hs aceto p=2.127e-06
+dots.allua %>%
+  filter(microbe == "HS Aceto") %>%
+  t.test(data=., um.ua~diet)
+
+#put it all together
+#make a new figure 2 
+#plot.donors.relabund.ind, plot.ancom.d.geno
+#use ggpubr to arrange
+# fig.2<- ggarrange(plot.donors.relabund.ind, 
+#           ggarrange(plot.ancom.d.geno, plot.dots.ua, ncol=2, widths =c(1,1), labels=c("B","C")), 
+#           nrow=2, labels="A")
+# 
+# ggsave(fig.2, file="~/Desktop/fig2abc.pdf", height=5, width=10)
+
+```
+
+
+figure 3 is the phenotypic effects from Acetobacter transplant for fecundity
+
+```{r}
+ovi.data<- read.table("datashare/2536_aceto_ovidata.csv", sep=",", header=TRUE)
+
+#reorder treatment levels
+ovi.data$fly.treat_f<- factor(ovi.data$fly.treat, levels = c("C0C", "CCC", "CHSC", 
+                                                              "HS0C", "HSCC", "HSHSC", 
+                                                              "C0HS", "CCHS", "CHSHS", 
+                                                              "HS0HS", "HSCHS", "HSHSHS"))
+
+ovi.data$fly.micro_f<- factor(ovi.data$fly.micro, levels = c("sterile", "control", "high sugar"))
+
+#ovitest was done on two different media, but there was no effect
+ggplot(ovi.data, aes(x=ovi.plate.treat, y=egg.no)) + 
+    geom_boxplot()
+
+wilcox.test(data=ovi.data, egg.no~ovi.plate.treat)
+
+#get sample sizes
+ovi.data %>%
+  group_by(fly.geno, fly.micro, fly.food) %>%
+  summarise(n=n())
+
+
+#visualize histogram of egg counts
+#lots of zeros 
+ggplot(ovi.data, aes(x=egg.no)) + 
+    geom_histogram(binwidth=1) +
+    theme_classic() 
+
+#visualize by histogram
+ggplot(ovi.data, aes(x=egg.no, fill=fly.micro_f)) + 
+  facet_wrap(fly.food~fly.geno) +
+  geom_histogram(aes(color=fly.micro_f), alpha = 0.6, binwidth = 2, position="dodge") + 
+  scale_color_manual(values=c("#fee090", "#99000d", "#91bfdb"), labels = c("sterile", "C Aceto", "HS Aceto")) + 
+  scale_fill_manual(values=c("#fee090", "#99000d", "#91bfdb"), labels = c("sterile", "C Aceto", "HS Aceto")) + 
+  theme_bw() + 
+  theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank()) + 
+  xlab("Egg count") + 
+  ylab("Frequency") + 
+  theme(legend.position = "bottom")
+
+
+#model to include zero dispersion through poisson distribution
+egg.m1<- glmmTMB(data=ovi.data, egg.no ~ fly.geno * fly.micro_f * fly.food + (1|plate.no), zi=~1, family=poisson)
+#update constrasts
+egg.m1b<- update(egg.m1, contrasts=list(fly.geno="contr.sum", fly.micro_f="contr.sum", fly.food="contr.sum"))
+
+#check dispersions
+#some dispersion but 1.34
+testDispersion(egg.m1b)
+#zero inflation is good 
+testZeroInflation(egg.m1b)
+
+summary(egg.m1b)
+Anova(egg.m1b, type="III")
+
+#check without interactions
+egg.m2<- glmmTMB(data=ovi.data, egg.no ~ fly.geno + fly.micro_f + fly.food + (1|plate.no), zi=~1, family=poisson)
+egg.m2b<- update(egg.m2, contrasts=list(fly.geno="contr.sum", fly.micro_f="contr.sum", fly.food="contr.sum"))
+
+#check dispersions
+#no dispersion
+testDispersion(egg.m2b)
+#zero inflation is good 
+testZeroInflation(egg.m2b)
+
+#stat summary
+summary(egg.m2b)
+Anova(egg.m2b, type="III")
+
+#compare models
+anova(egg.m1b, egg.m2b)
+
+#look at R2 between the two
+MuMIn::r.squaredGLMM(egg.m2)
+MuMIn::r.squaredGLMM(egg.m1)
+
+#looking at variance explained by different models 
+#all single terms 
+var.m1 <- glmmTMB(data=ovi.data, egg.no~fly.geno + (1|plate.no), zi=~1, family=poisson)
+var.m2 <- glmmTMB(data=ovi.data, egg.no~fly.micro_f + (1|plate.no), zi=~1, family=poisson)
+var.m3 <- glmmTMB(data=ovi.data, egg.no~fly.food + (1|plate.no), zi=~1, family=poisson)
+var.m4 <- glmmTMB(data=ovi.data, egg.no~fly.geno + fly.micro_f + (1|plate.no), zi=~1, family=poisson)
+var.m5 <- glmmTMB(data=ovi.data, egg.no~fly.geno + fly.food + (1|plate.no), zi=~1, family=poisson)
+var.m6 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + (1|plate.no), zi=~1, family=poisson)
+var.m7 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno + (1|plate.no), zi=~1, family=poisson)
+
+#adding on interactions
+var.m8 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno +
+                  fly.food:fly.micro_f + (1|plate.no), zi=~1, family=poisson)
+var.m9 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno +
+                  fly.food:fly.geno + (1|plate.no), zi=~1, family=poisson)
+var.m10 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno +
+                  fly.micro_f:fly.geno + (1|plate.no), zi=~1, family=poisson)
+
+#what add all together 
+var.m11 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno +
+                  fly.micro_f:fly.geno + fly.food:fly.micro_f + fly.food:fly.geno
+                  + (1|plate.no), zi=~1, family=poisson)
+
+
+var.m12 <- glmmTMB(data=ovi.data, egg.no~fly.food + fly.micro_f + fly.geno +
+                  fly.micro_f:fly.geno + fly.food:fly.micro_f + fly.food:fly.geno +
+                  fly.micro_f:fly.geno:fly.food + (1|plate.no), zi=~1, family=poisson)
+
+#get rsquared for each model and save them in spreadsheet
+MuMIn::r.squaredGLMM(var.m1)
+MuMIn::r.squaredGLMM(var.m2)
+MuMIn::r.squaredGLMM(var.m3)
+MuMIn::r.squaredGLMM(var.m4)
+MuMIn::r.squaredGLMM(var.m5)
+MuMIn::r.squaredGLMM(var.m6)
+MuMIn::r.squaredGLMM(var.m7)
+MuMIn::r.squaredGLMM(var.m8)
+MuMIn::r.squaredGLMM(var.m9)
+MuMIn::r.squaredGLMM(var.m10)
+MuMIn::r.squaredGLMM(var.m11)
+MuMIn::r.squaredGLMM(var.m12)
+
+#the above r.squaredGLMM are in the data table for adds
+adds <- read.table("datashare/chs_fecund_variance_adds.csv", sep=",", header=TRUE)
+
+#plot.fecund.adds <-
+ggplot(adds, aes(x=fct_reorder(model, delta.r2, .desc=TRUE), y=delta.r2)) + 
+  geom_bar(stat="identity") +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle=90, hjust=1)) + 
+  xlab("Model terms") +
+  ylab("fixed effect R2")
+
+#ggsave(plot.fecund.adds, file="plot_addr2.pdf", height=4, width=4)
+
+#perform posthoc analysis of model 
+egg.m1.a <- emmeans(egg.m1, ~fly.geno * fly.micro_f, by="fly.food", data=ovi.data)
+pairs(egg.m1.a, adjust="tukey")
+
+#visual interactions through least square means 
+emmip(egg.m1, fly.micro_f~fly.food|fly.geno)
+
+#save to customize visualization. want diet on a axis 
+m1.emm<- emmip(egg.m1, fly.micro_f~fly.geno|fly.food, CIs = TRUE, plotit=FALSE)
+
+#plot.fecundity.revise<-
+ggplot(m1.emm, aes(x=fly.geno, y=yvar, group=interaction(fly.geno, fly.micro_f))) + 
+  geom_point(aes(color=fly.micro_f), position=pd, size=2.5) + 
+  geom_line(aes(color=fly.micro_f, group=fly.micro_f), position=pd) +
+  facet_wrap(~fly.food) + 
+  scale_color_manual(values = c("#fee090", "#99000d", "#91bfdb")) + 
+  geom_errorbar(aes(ymin=yvar-SE, ymax=yvar+SE, color=fly.micro_f, width=0.1), position = pd) +
+  theme_bw() + 
+  xlab("") + 
+  ylab("Linear prediction") +
+  ylab("Least square means for fecundity") + 
+  scale_x_discrete(labels = c("control fly" = "C fly", "high sugar fly" = "HS fly")) +
+  theme(legend.title=element_blank()) + 
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "none") +
+  ylim(0,3) 
+
+#ggsave(plot.fecundity.revise, file="~/Desktop/plot_3b_revise.pdf", height=3, width=3)
+
+#print counts by different groupings
+#for diet differences
+ovi.data %>%
+  group_by(fly.food) %>%
+  summarise(mean=mean(egg.no), sd = sd(egg.no), se = sd/sqrt(n()))
+
+#for differences between sterile and non sterile
+ovi.data %>%
+  mutate(type = case_when(fly.micro == "sterile" ~ "sterile", 
+                          fly.micro != "sterile" ~ "microbes")) %>%
+  group_by(fly.food, type) %>%
+  summarise(mean=mean(egg.no), sd = sd(egg.no), se = sd/sqrt(n()))
+
+#for 3way interactions 
+ovi.data %>%
+  group_by(fly.geno,fly.micro_f, fly.food) %>%
+  summarise(N=n(), mean=mean(egg.no), sd = sd(egg.no), se = sd/sqrt(n()))
+
+
+```
+
+
+
+
+
+
