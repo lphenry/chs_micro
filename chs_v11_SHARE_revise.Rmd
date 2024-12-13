@@ -258,8 +258,14 @@ ovi.data$fly.treat_f<- factor(ovi.data$fly.treat, levels = c("C0C", "CCC", "CHSC
 ovi.data$fly.micro_f<- factor(ovi.data$fly.micro, levels = c("sterile", "control", "high sugar"))
 
 #ovitest was done on two different media, but there was no effect
+plot.ovimedia <-
 ggplot(ovi.data, aes(x=ovi.plate.treat, y=egg.no)) + 
-    geom_boxplot()
+    geom_boxplot(outlier.color = NA) +
+    geom_jitter(width=0.1) +
+    xlab("Oviposition plate media") + 
+    ylab("Eggs")
+
+ggsave(plot.ovimedia, file="plot_ovimedia.pdf", height=4, width=3)
 
 wilcox.test(data=ovi.data, egg.no~ovi.plate.treat)
 
